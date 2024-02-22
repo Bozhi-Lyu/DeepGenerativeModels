@@ -295,8 +295,8 @@ def train(model, optimizer, data_loader, epochs, device):
 
     for epoch in range(epochs):
         data_iter = iter(data_loader)
-        for x, labels in data_iter:
-            x = x.to(device)
+        for x in data_iter:
+            x = x[0].to(device)
             labels = labels.to(device)
             optimizer.zero_grad()
             loss = model.loss(x)
@@ -325,6 +325,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch-size', type=int, default=10000, metavar='N', help='batch size for training (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=1, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--lr', type=float, default=1e-3, metavar='V', help='learning rate for training (default: %(default)s)')
+    parser.add_argument('--masktype', type=str, default='random', choices=['random', 'chequerboard'], help='masking pattern (default: %(default)s)')
 
     args = parser.parse_args()
     print('# Options')
@@ -334,10 +335,11 @@ if __name__ == "__main__":
     # Generate the data
     n_data = 10000000
     toy = {'tg': ToyData.TwoGaussians, 'cb': ToyData.Chequerboard}[args.data]()
-    #train_loader = torch.utils.data.DataLoader(toy().sample((n_data,)), batch_size=args.batch_size, shuffle=True)
-    #test_loader = torch.utils.data.DataLoader(toy().sample((n_data,)), batch_size=args.batch_size, shuffle=True)
+    train_loader = torch.utils.data.DataLoader(toy().sample((n_data,)), batch_size=args.batch_size, shuffle=True)
+    test_loader = torch.utils.data.DataLoader(toy().sample((n_data,)), batch_size=args.batch_size, shuffle=True)
     
     # Load the MNIST dataset
+    """
     mnist_train = datasets.MNIST('data/', train=True, download=True, transform=transforms.Compose([
                     transforms.ToTensor(),
                     transforms.Lambda(lambda x: x + torch.rand(x.shape)/255), 
@@ -354,7 +356,7 @@ if __name__ == "__main__":
     
     train_loader = torch.utils.data.DataLoader(mnist_train, batch_size=args.batch_size, shuffle=True)
     test_loader = torch.utils.data.DataLoader(mnist_test, batch_size=args.batch_size, shuffle=True)
-
+"""
     # Define prior distribution
     #D = next(iter(train_loader)).shape[1]
     D = 28*28
@@ -364,7 +366,7 @@ if __name__ == "__main__":
     transformations =[]
     
     # The checkerboard mask
-    checkerboard_mask = torch.Tensor([1 if (i+j) % 2 == 0 else 0 for i in range(28) for j in range(28)])
+    base_mask = torch.Tensor([1 if (i+j) % 2 == 0 else 0 for i in range(28) for j in range(28)])
     
     
     num_transformations = 8
@@ -377,14 +379,21 @@ if __name__ == "__main__":
 
 
     for i in range(num_transformations):
-        #mask = (1-mask) # Flip the mask
+        if args.masktype == "random":
+            mask = torch.rand(28*28)
+
+        elif args.masktype == "chequerboard":
+            if i%2 == 0:
+                mask = (1-base_mask) # Flip the mask
+            else:
+                mask = base_mask
         #scale_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D))
         # Add tanh activation at the end of the scale_net
         scale_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D), nn.Tanh())
         translation_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D))
         #transformations.append(MaskedCouplingLayer(scale_net, translation_net, mask))
         #transformations.append(RandMaskedCouplingLayer(scale_net, translation_net, D))
-        transformations.append(MaskedCouplingLayer(scale_net, translation_net, checkerboard_mask))
+        transformations.append(MaskedCouplingLayer(scale_net, translation_net, mask))
 
     # Define flow model
     model = Flow(base, transformations).to(args.device)
