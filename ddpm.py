@@ -46,8 +46,28 @@ class DDPM(nn.Module):
         """
 
         ### Implement Algorithm 1 here ###
-        neg_elbo = 0
-
+        
+        batch_size, input_dim = x.shape
+        
+        # Sample t ~ Uniform({1, ..., T})
+        t = torch.randint(1, self.T + 1, (batch_size, input_dim))
+        print(t.shape)
+        
+        alpha_t = self.alpha_cumprod[t-1].view(-1, 1)
+        
+        # Sample epsilon ~ N(0, I)
+        epsilon = torch.randn_like(x[0])
+        
+        
+        # Compute x_t
+        x_t = torch.sqrt(alpha_t) * x[0] + torch.sqrt(1 - alpha_t) * epsilon
+        
+        # Predict epsilon_0 (noise prediction)
+        epsilon_0_pred = self.network(x_t, t-1)
+        
+        # Negative ELBO
+        neg_elbo = (epsilon - epsilon_0_pred)**2
+    
         return neg_elbo
 
     def sample(self, shape):
@@ -63,12 +83,18 @@ class DDPM(nn.Module):
         """
         # Sample x_t for t=T (i.e., Gaussian noise)
         x_t = torch.randn(shape).to(self.alpha.device)
+        sigma_t = torch.sqrt(self.beta_T)
 
         # Sample x_t given x_{t+1} until x_0 is sampled
         for t in range(self.T-1, -1, -1):
             ### Implement the remaining of Algorithm 2 here ###
-            pass
-
+            if t > 1:
+                z = torch.randn(shape)
+                x_t = (1 / torch.sqrt(self.alpha[t])) * (x_t - ((1 - self.alpha[t]) / torch.sqrt(1 - self.alpha_cumprod[t])) * self.network(x_t, t)) + sigma_t * z
+            else:
+                z = 0
+                x_t = (1 / torch.sqrt(self.alpha[t])) * (x_t - ((1 - self.alpha[t]) / torch.sqrt(1 - self.alpha_cumprod[t])) * self.network(x_t, t)) + sigma_t * z
+        
         return x_t
 
     def loss(self, x):

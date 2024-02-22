@@ -53,6 +53,8 @@ class MaskedCouplingLayer(nn.Module):
         self.scale_net = scale_net
         self.translation_net = translation_net
         self.mask = nn.Parameter(mask, requires_grad=False)
+        
+
 
     def forward(self, z):
         """
@@ -67,8 +69,14 @@ class MaskedCouplingLayer(nn.Module):
         sum_log_det_J: [torch.Tensor]
             The sum of the log determinants of the Jacobian matrices of the forward transformations of dimension `(batch_size, feature_dim)`.
         """
-        x = z
-        log_det_J = torch.zeros(z.shape[0])
+        
+        # The masked coupling layer
+        x = z * self.mask + (1 - self.mask) * (z * torch.exp(self.scale_net(self.mask * z)) + self.translation_net(self.mask * z))
+        
+        # The log determinant of the Jacobian
+        log_det_J = torch.sum((1 - self.mask) * (self.scale_net(self.mask * z)), dim=1)
+        #log_det_J = torch.zeros(z.shape[0])
+        
         return x, log_det_J
     
     def inverse(self, x):
@@ -84,8 +92,86 @@ class MaskedCouplingLayer(nn.Module):
         sum_log_det_J: [torch.Tensor]
             The sum of the log determinants of the Jacobian matrices of the inverse transformations.
         """
-        z = x
-        log_det_J = torch.zeros(x.shape[0])
+        
+        # The inverse of the masked coupling layer. 
+        z = self.mask * x + (1 - self.mask) * (x - self.translation_net(self.mask * x)) * torch.exp(-self.scale_net(self.mask * x))
+        
+        # The log determinant of the Jacobian of the inverse transformation is the negative of the log determinant of the Jacobian of the forward transformation
+        log_det_J = -torch.sum((1 - self.mask) * (self.scale_net(self.mask * z)), dim=1)
+        
+        return z, log_det_J
+
+class RandMaskedCouplingLayer(nn.Module):
+    """
+    An affine coupling layer for a normalizing flow.
+    """
+
+    def __init__(self, scale_net, translation_net, feature_dim):
+        """
+        Define a coupling layer.
+
+        Parameters:
+        scale_net: [torch.nn.Module]
+            The scaling network that takes as input a tensor of dimension `(batch_size, feature_dim)` and outputs a tensor of dimension `(batch_size, feature_dim)`.
+        translation_net: [torch.nn.Module]
+            The translation network that takes as input a tensor of dimension `(batch_size, feature_dim)` and outputs a tensor of dimension `(batch_size, feature_dim)`.
+        mask: [torch.Tensor]
+            A binary mask of dimension `(feature_dim,)` that determines which features (where the mask is zero) are transformed by the scaling and translation networks.
+        """
+        super(RandMaskedCouplingLayer, self).__init__()
+        self.scale_net = scale_net
+        self.translation_net = translation_net
+        self.feature_dim = feature_dim
+        
+
+
+    def forward(self, z):
+        """
+        Transform a batch of data through the coupling layer (from the base to data).
+
+        Parameters:
+        x: [torch.Tensor]
+            The input to the transformation of dimension `(batch_size, feature_dim)`
+        Returns:
+        z: [torch.Tensor]
+            The output of the transformation of dimension `(batch_size, feature_dim)`
+        sum_log_det_J: [torch.Tensor]
+            The sum of the log determinants of the Jacobian matrices of the forward transformations of dimension `(batch_size, feature_dim)`.
+        """
+        
+        # Generate a new random mask on each forward pass
+        mask = torch.bernoulli(0.5*torch.ones(self.feature_dim))
+        
+        # The masked coupling layer
+        x = z * mask + (1 - mask) * (z * torch.exp(self.scale_net(mask * z)) + self.translation_net(mask * z))
+        
+        # The log determinant of the Jacobian
+        log_det_J = torch.sum((1 - self.mask) * (self.scale_net(mask * z)), dim=1)
+        #log_det_J = torch.zeros(z.shape[0])
+        
+        return x, log_det_J
+    
+    def inverse(self, x):
+        """
+        Transform a batch of data through the coupling layer (from data to the base).
+
+        Parameters:
+        z: [torch.Tensor]
+            The input to the inverse transformation of dimension `(batch_size, feature_dim)`
+        Returns:
+        x: [torch.Tensor]
+            The output of the inverse transformation of dimension `(batch_size, feature_dim)`
+        sum_log_det_J: [torch.Tensor]
+            The sum of the log determinants of the Jacobian matrices of the inverse transformations.
+        """
+        mask = torch.bernoulli(0.5*torch.ones(self.feature_dim))
+        
+        # The inverse of the masked coupling layer. 
+        z = mask * x + (1 - mask) * (x - self.translation_net(mask * x)) * torch.exp(-self.scale_net(mask * x))
+        
+        # The log determinant of the Jacobian of the inverse transformation is the negative of the log determinant of the Jacobian of the forward transformation
+        log_det_J = -torch.sum((1 - mask) * (self.scale_net(mask * z)), dim=1)
+        
         return z, log_det_J
 
 
@@ -209,8 +295,9 @@ def train(model, optimizer, data_loader, epochs, device):
 
     for epoch in range(epochs):
         data_iter = iter(data_loader)
-        for x in data_iter:
+        for x, labels in data_iter:
             x = x.to(device)
+            labels = labels.to(device)
             optimizer.zero_grad()
             loss = model.loss(x)
             loss.backward()
@@ -247,29 +334,57 @@ if __name__ == "__main__":
     # Generate the data
     n_data = 10000000
     toy = {'tg': ToyData.TwoGaussians, 'cb': ToyData.Chequerboard}[args.data]()
-    train_loader = torch.utils.data.DataLoader(toy().sample((n_data,)), batch_size=args.batch_size, shuffle=True)
-    test_loader = torch.utils.data.DataLoader(toy().sample((n_data,)), batch_size=args.batch_size, shuffle=True)
+    #train_loader = torch.utils.data.DataLoader(toy().sample((n_data,)), batch_size=args.batch_size, shuffle=True)
+    #test_loader = torch.utils.data.DataLoader(toy().sample((n_data,)), batch_size=args.batch_size, shuffle=True)
+    
+    # Load the MNIST dataset
+    mnist_train = datasets.MNIST('data/', train=True, download=True, transform=transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Lambda(lambda x: x + torch.rand(x.shape)/255), 
+                    transforms.Lambda(lambda x: x.flatten())
+                    ]) 
+                   )
+    
+    mnist_test = datasets.MNIST('data/', train=False, download=True, transform=transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Lambda(lambda x: x + torch.rand(x.shape)/255), 
+                    transforms.Lambda(lambda x: x.flatten())
+                    ]) 
+                   )
+    
+    train_loader = torch.utils.data.DataLoader(mnist_train, batch_size=args.batch_size, shuffle=True)
+    test_loader = torch.utils.data.DataLoader(mnist_test, batch_size=args.batch_size, shuffle=True)
 
     # Define prior distribution
-    D = next(iter(train_loader)).shape[1]
+    #D = next(iter(train_loader)).shape[1]
+    D = 28*28
     base = GaussianBase(D)
 
     # Define transformations
     transformations =[]
-    mask = torch.Tensor([1 if (i+j) % 2 == 0 else 0 for i in range(28) for j in range(28)])
     
-    num_transformations = 5
-    num_hidden = 8
+    # The checkerboard mask
+    checkerboard_mask = torch.Tensor([1 if (i+j) % 2 == 0 else 0 for i in range(28) for j in range(28)])
+    
+    
+    num_transformations = 8
+    num_hidden = 14
 
     # Make a mask that is 1 for the first half of the features and 0 for the second half
-    mask = torch.zeros((D,))
-    mask[D//2:] = 1
-    
+    #mask = torch.zeros((D,))
+    #mask[D//2:] = 1
+
+
+
     for i in range(num_transformations):
-        mask = (1-mask) # Flip the mask
-        scale_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D))
+        #mask = (1-mask) # Flip the mask
+        #scale_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D))
+        # Add tanh activation at the end of the scale_net
+        scale_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D), nn.Tanh())
         translation_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D))
-        transformations.append(MaskedCouplingLayer(scale_net, translation_net, mask))
+        #transformations.append(MaskedCouplingLayer(scale_net, translation_net, mask))
+        #transformations.append(RandMaskedCouplingLayer(scale_net, translation_net, D))
+        transformations.append(MaskedCouplingLayer(scale_net, translation_net, checkerboard_mask))
 
     # Define flow model
     model = Flow(base, transformations).to(args.device)
@@ -286,6 +401,7 @@ if __name__ == "__main__":
         torch.save(model.state_dict(), args.model)
 
     elif args.mode == 'sample':
+
         import matplotlib.pyplot as plt
         import numpy as np
 
@@ -299,6 +415,7 @@ if __name__ == "__main__":
         # Plot the density of the toy data and the model samples
         coordinates = [[[x,y] for x in np.linspace(*toy.xlim, 1000)] for y in np.linspace(*toy.ylim, 1000)]
         prob = torch.exp(toy().log_prob(torch.tensor(coordinates)))
+        
 
         fig, ax = plt.subplots(1, 1, figsize=(7, 5))
         im = ax.imshow(prob, extent=[toy.xlim[0], toy.xlim[1], toy.ylim[0], toy.ylim[1]], origin='lower', cmap='YlOrRd')
@@ -309,3 +426,4 @@ if __name__ == "__main__":
         fig.colorbar(im)
         plt.savefig(args.samples)
         plt.close()
+
