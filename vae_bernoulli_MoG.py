@@ -38,6 +38,36 @@ class GaussianPrior(nn.Module):
         """
         return td.Independent(td.Normal(loc=self.mean, scale=self.std), 1)
 
+class MoGPrior(nn.Module):
+    def __init__(self, M, num_components = 10):
+        """
+        Define a mixture of Gaussian prior distribution with zero mean and unit variance.
+
+        Parameters:
+        M: [int] Dimension of the latent space.
+        num_components: [int] Number of Gaussian components in the mixture.
+        """
+        super(MoGPrior, self).__init__()
+        self.M = M
+        self.num_components = num_components
+
+        self.means = nn.Parameter(torch.zeros(self.num_components, self.M))
+        self.stds = nn.Parameter(torch.ones(self.num_components, self.M))
+        # print("means.size(): ", self.means.size())
+        self.weights = nn.Parameter(torch.ones(self.num_components) / self.num_components)
+
+    def forward(self):
+        """
+        Return the prior distribution.
+
+        Returns:
+        prior: [torch.distributions.Distribution]
+        """
+        mix = td.Categorical(probs=self.weights)
+        comp = torch.distributions.Independent( td.Normal(self.means, self.stds), 1)
+        prior = td.MixtureSameFamily(mix, comp)
+
+        return prior
 
 class GaussianEncoder(nn.Module):
     def __init__(self, encoder_net):
@@ -124,7 +154,11 @@ class VAE(nn.Module):
         """
         q = self.encoder(x)
         z = q.rsample()
-        elbo = torch.mean(self.decoder(z).log_prob(x) - td.kl_divergence(q, self.prior()), dim=0)
+        if isinstance(self.prior, GaussianPrior):
+            KL_qp = td.kl_divergence(q, self.prior())
+        else:
+            KL_qp = q.log_prob(z) - self.prior().log_prob(z)
+        elbo = torch.mean(self.decoder(z).log_prob(x) - KL_qp, dim=0)
         return elbo
 
     def sample(self, n_samples=1):
@@ -218,7 +252,7 @@ if __name__ == "__main__":
 
     # Define prior distribution
     M = args.latent_dim
-    prior = GaussianPrior(M)
+    prior = MoGPrior(M)
 
     # Define encoder and decoder networks
     encoder_net = nn.Sequential(
