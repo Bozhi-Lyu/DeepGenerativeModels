@@ -62,7 +62,7 @@ class MixedGaussianPrior(nn.Module):
         Returns:
         prior: [torch.distributions.Distribution]
         """
-        mix = td.Categorical(torch.ones(self.K,))
+        mix = td.Categorical(torch.ones(self.K) / self.K) # Uniform weights
         comp = td.Independent(td.Normal(loc=self.mean, scale=self.std), 1)
         return td.MixtureSameFamily(mix, comp)
 
