@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.distributions as td
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 class GaussianBase(nn.Module):
     def __init__(self, D):
@@ -244,7 +245,7 @@ class Flow(nn.Module):
         z, log_det_J = self.inverse(x)
         return self.base().log_prob(z) + log_det_J
     
-    def sample(self, sample_shape=(1,)):
+    def sample(self, n_samples=1):
         """
         Sample from the flow.
 
@@ -255,7 +256,7 @@ class Flow(nn.Module):
         z: [torch.Tensor]
             The samples of dimension `(n_samples, feature_dim)`
         """
-        z = self.base().sample(sample_shape)
+        z = self.base().sample(torch.Size([n_samples]))
         return self.forward(z)[0]
     
     def loss(self, x):
@@ -297,7 +298,6 @@ def train(model, optimizer, data_loader, epochs, device):
         data_iter = iter(data_loader)
         for x in data_iter:
             x = x[0].to(device)
-            labels = labels.to(device)
             optimizer.zero_grad()
             loss = model.loss(x)
             loss.backward()
@@ -317,7 +317,7 @@ if __name__ == "__main__":
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'eval', 'plot'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--data', type=str, default='tg', choices=['tg', 'cb'], help='toy dataset to use {tg: two Gaussians, cb: chequerboard} (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
@@ -332,19 +332,22 @@ if __name__ == "__main__":
     for key, value in sorted(vars(args).items()):
         print(key, '=', value)
 
+    device = args.device
+
+    """ 
     # Generate the data
     n_data = 10000000
     toy = {'tg': ToyData.TwoGaussians, 'cb': ToyData.Chequerboard}[args.data]()
     train_loader = torch.utils.data.DataLoader(toy().sample((n_data,)), batch_size=args.batch_size, shuffle=True)
     test_loader = torch.utils.data.DataLoader(toy().sample((n_data,)), batch_size=args.batch_size, shuffle=True)
-    
-    # Load the MNIST dataset
     """
+    # Load the MNIST dataset
+
     mnist_train = datasets.MNIST('data/', train=True, download=True, transform=transforms.Compose([
                     transforms.ToTensor(),
                     transforms.Lambda(lambda x: x + torch.rand(x.shape)/255), 
                     transforms.Lambda(lambda x: x.flatten())
-                    ]) 
+                    ])
                    )
     
     mnist_test = datasets.MNIST('data/', train=False, download=True, transform=transforms.Compose([
@@ -356,7 +359,7 @@ if __name__ == "__main__":
     
     train_loader = torch.utils.data.DataLoader(mnist_train, batch_size=args.batch_size, shuffle=True)
     test_loader = torch.utils.data.DataLoader(mnist_test, batch_size=args.batch_size, shuffle=True)
-"""
+
     # Define prior distribution
     #D = next(iter(train_loader)).shape[1]
     D = 28*28
@@ -369,8 +372,8 @@ if __name__ == "__main__":
     base_mask = torch.Tensor([1 if (i+j) % 2 == 0 else 0 for i in range(28) for j in range(28)])
     
     
-    num_transformations = 8
-    num_hidden = 14
+    num_transformations = 25
+    num_hidden = 8
 
     # Make a mask that is 1 for the first half of the features and 0 for the second half
     #mask = torch.zeros((D,))
@@ -396,7 +399,7 @@ if __name__ == "__main__":
         transformations.append(MaskedCouplingLayer(scale_net, translation_net, mask))
 
     # Define flow model
-    model = Flow(base, transformations).to(args.device)
+    model = Flow(base, transformations).to(device)
 
     # Choose mode to run
     if args.mode == 'train':
@@ -404,28 +407,22 @@ if __name__ == "__main__":
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
         # Train model
-        train(model, optimizer, train_loader, args.epochs, args.device)
+        train(model, optimizer, train_loader, args.epochs, device)
 
         # Save model
         torch.save(model.state_dict(), args.model)
-
+        """
     elif args.mode == 'sample':
-
         import matplotlib.pyplot as plt
         import numpy as np
-
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
-
         # Generate samples
         model.eval()
         with torch.no_grad():
             samples = (model.sample((10000,))).cpu() 
-
         # Plot the density of the toy data and the model samples
         coordinates = [[[x,y] for x in np.linspace(*toy.xlim, 1000)] for y in np.linspace(*toy.ylim, 1000)]
         prob = torch.exp(toy().log_prob(torch.tensor(coordinates)))
-        
-
         fig, ax = plt.subplots(1, 1, figsize=(7, 5))
         im = ax.imshow(prob, extent=[toy.xlim[0], toy.xlim[1], toy.ylim[0], toy.ylim[1]], origin='lower', cmap='YlOrRd')
         ax.scatter(samples[:, 0], samples[:, 1], s=1, c='black', alpha=0.5)
@@ -435,4 +432,42 @@ if __name__ == "__main__":
         fig.colorbar(im)
         plt.savefig(args.samples)
         plt.close()
+    """
+    elif args.mode == 'sample':
+        model.load_state_dict(torch.load(args.model, map_location=torch.device(device)))
 
+        # Generate samples
+        model.eval()
+        with torch.no_grad():
+            samples = (model.sample(64)).cpu()
+            save_image(samples.view(64, 1, 28, 28), args.masktype + "_" + args.samples)
+
+    elif args.mode == 'eval':
+        model.load_state_dict(torch.load(args.model, map_location=torch.device(device)))
+
+        # Evaluate model
+        model.eval()
+        with torch.no_grad():
+            for x, _ in test_loader:
+                x = x.to(device)
+                loss = model(x)
+                print(f'Loss: {loss.item()}')
+                break
+
+    elif args.mode == 'plot':
+        model.load_state_dict(torch.load(args.model, map_location=torch.device(device)))
+
+        # Plot samples from the approximate posterior with their corresponding colour coded by class
+        # If latent dimensions is larger than 2, use PCA to reduce dimensionality onto the first two principal components
+        model.eval()
+        with torch.no_grad():
+            for x, y in test_loader:
+                x = x.to(device)
+                z = model.encoder(x).mean
+                break
+
+        pca = PCA(n_components=2)
+        z_pca = pca.fit_transform(z.cpu().numpy())
+        plt.scatter(z_pca[:, 0], z_pca[:, 1], c=y, cmap='tab10')
+        plt.colorbar()
+        plt.show()

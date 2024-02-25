@@ -274,7 +274,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch-size', type=int, default=32, metavar='N', help='batch size for training (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=10, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=32, metavar='N', help='dimension of latent variable (default: %(default)s)')
-
+    parser.add_argument('--prior', type=int, default="gaussian", choices=['gaussian', 'mix', 'flow'], help='dimension of latent variable (default: %(default)s)')
     args = parser.parse_args()
     print('# Options')
     for key, value in sorted(vars(args).items()):
@@ -284,9 +284,13 @@ if __name__ == "__main__":
 
     # Load MNIST as binarized at 'thresshold' and create data loaders
     thresshold = 0.5
-    mnist_train_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=True, download=True,
-                                                                    transform=transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: (thresshold < x).float().squeeze())])),
-                                                    batch_size=args.batch_size, shuffle=True)
+    mnist_train_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=True, download=True, transform=transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Lambda(lambda x: (thresshold < x).float().squeeze())
+            ])),
+                                                     batch_size=args.batch_size,
+                                                     shuffle=True
+                                                     )
     mnist_test_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=False, download=True,
                                                                 transform=transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: (thresshold < x).float().squeeze())])),
                                                     batch_size=args.batch_size, shuffle=True)
