@@ -14,7 +14,6 @@ from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 
 
-
 class GaussianPrior(nn.Module):
     def __init__(self, M):
         """
@@ -37,6 +36,7 @@ class GaussianPrior(nn.Module):
         prior: [torch.distributions.Distribution]
         """
         return td.Independent(td.Normal(loc=self.mean, scale=self.std), 1)
+
 
 class MixedGaussianPrior(nn.Module):
     def __init__(self, M, K):
@@ -66,6 +66,7 @@ class MixedGaussianPrior(nn.Module):
         comp = td.Independent(td.Normal(loc=self.mean, scale=self.std), 1)
         return td.MixtureSameFamily(mix, comp)
 
+
 class FlowPrior(nn.Module):
     def __init__(self, scale_net, translation_net, mask):
         """
@@ -73,9 +74,11 @@ class FlowPrior(nn.Module):
 
         Parameters:
         scale_net: [torch.nn.Module]
-           A neural network that takes as input a tensor of dimension `(batch_size, M)` and outputs a tensor of dimension `(batch_size, M)`.
+           A neural network that takes as input a tensor of dimension `(batch_size, M)`
+           and outputs a tensor of dimension `(batch_size, M)`.
         translation_net: [torch.nn.Module]
-           A neural network that takes as input a tensor of dimension `(batch_size, M)` and outputs a tensor of dimension `(batch_size, M)`.
+           A neural network that takes as input a tensor of dimension `(batch_size, M)`
+           and outputs a tensor of dimension `(batch_size, M)`.
         mask: [torch.Tensor]
            A tensor of dimension `(M, M)` that defines the mask for the autoregressive transformation.
         """
@@ -153,7 +156,7 @@ class VAE(nn.Module):
     """
     Define a Variational Autoencoder (VAE) model.
     """
-    def __init__(self, prior, decoder, encoder, mog):
+    def __init__(self, prior, decoder, encoder, type=None):
         """
         Parameters:
         prior: [torch.nn.Module] 
@@ -168,6 +171,7 @@ class VAE(nn.Module):
         self.prior = prior
         self.decoder = decoder
         self.encoder = encoder
+        self.type = type
 
     def elbo(self, x):
         """
@@ -183,7 +187,7 @@ class VAE(nn.Module):
         z = q.rsample() # Reparameterization trick
 
         # MOG manually compute KL divergence
-        if self.mog == True:
+        if self.type == "mog":
             log_prob_prior = self.prior().log_prob(z)
             log_prob_q = q.log_prob(z)
             kl = (log_prob_q - log_prob_prior).mean()
@@ -274,7 +278,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch-size', type=int, default=32, metavar='N', help='batch size for training (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=10, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=32, metavar='N', help='dimension of latent variable (default: %(default)s)')
-    parser.add_argument('--prior', type=int, default="gaussian", choices=['gaussian', 'mix', 'flow'], help='dimension of latent variable (default: %(default)s)')
+    parser.add_argument('--prior', type=str, default="gaussian", choices=['gaussian', 'mix', 'flow'], help='dimension of latent variable (default: %(default)s)')
     args = parser.parse_args()
     print('# Options')
     for key, value in sorted(vars(args).items()):
@@ -306,8 +310,13 @@ if __name__ == "__main__":
     # Define prior distribution
     M = args.latent_dim
     K = 5
-    prior = GaussianPrior(M)
-    mog_prior = MixedGaussianPrior(M, K)
+    if args.prior == "gaussian":
+        prior = GaussianPrior()
+    elif args.prior =="mix":
+        prior = MixedGaussianPrior(M, K)
+    elif args.prior == "flow":
+        prior = FlowPrior(M, args)
+
 
     # Define encoder and decoder networks
     encoder_net = nn.Sequential(
