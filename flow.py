@@ -102,79 +102,6 @@ class MaskedCouplingLayer(nn.Module):
         
         return z, log_det_J
 
-class RandMaskedCouplingLayer(nn.Module):
-    """
-    An affine coupling layer for a normalizing flow.
-    """
-
-    def __init__(self, scale_net, translation_net, feature_dim):
-        """
-        Define a coupling layer.
-
-        Parameters:
-        scale_net: [torch.nn.Module]
-            The scaling network that takes as input a tensor of dimension `(batch_size, feature_dim)` and outputs a tensor of dimension `(batch_size, feature_dim)`.
-        translation_net: [torch.nn.Module]
-            The translation network that takes as input a tensor of dimension `(batch_size, feature_dim)` and outputs a tensor of dimension `(batch_size, feature_dim)`.
-        mask: [torch.Tensor]
-            A binary mask of dimension `(feature_dim,)` that determines which features (where the mask is zero) are transformed by the scaling and translation networks.
-        """
-        super(RandMaskedCouplingLayer, self).__init__()
-        self.scale_net = scale_net
-        self.translation_net = translation_net
-        self.feature_dim = feature_dim
-        
-
-
-    def forward(self, z):
-        """
-        Transform a batch of data through the coupling layer (from the base to data).
-
-        Parameters:
-        x: [torch.Tensor]
-            The input to the transformation of dimension `(batch_size, feature_dim)`
-        Returns:
-        z: [torch.Tensor]
-            The output of the transformation of dimension `(batch_size, feature_dim)`
-        sum_log_det_J: [torch.Tensor]
-            The sum of the log determinants of the Jacobian matrices of the forward transformations of dimension `(batch_size, feature_dim)`.
-        """
-        
-        # Generate a new random mask on each forward pass
-        mask = torch.bernoulli(0.5*torch.ones(self.feature_dim))
-        
-        # The masked coupling layer
-        x = z * mask + (1 - mask) * (z * torch.exp(self.scale_net(mask * z)) + self.translation_net(mask * z))
-        
-        # The log determinant of the Jacobian
-        log_det_J = torch.sum((1 - self.mask) * (self.scale_net(mask * z)), dim=1)
-        #log_det_J = torch.zeros(z.shape[0])
-        
-        return x, log_det_J
-    
-    def inverse(self, x):
-        """
-        Transform a batch of data through the coupling layer (from data to the base).
-
-        Parameters:
-        z: [torch.Tensor]
-            The input to the inverse transformation of dimension `(batch_size, feature_dim)`
-        Returns:
-        x: [torch.Tensor]
-            The output of the inverse transformation of dimension `(batch_size, feature_dim)`
-        sum_log_det_J: [torch.Tensor]
-            The sum of the log determinants of the Jacobian matrices of the inverse transformations.
-        """
-        mask = torch.bernoulli(0.5*torch.ones(self.feature_dim))
-        
-        # The inverse of the masked coupling layer. 
-        z = mask * x + (1 - mask) * (x - self.translation_net(mask * x)) * torch.exp(-self.scale_net(mask * x))
-        
-        # The log determinant of the Jacobian of the inverse transformation is the negative of the log determinant of the Jacobian of the forward transformation
-        log_det_J = -torch.sum((1 - mask) * (self.scale_net(mask * z)), dim=1)
-        
-        return z, log_det_J
-
 
 class Flow(nn.Module):
     def __init__(self, base, transformations):
@@ -256,7 +183,10 @@ class Flow(nn.Module):
         z: [torch.Tensor]
             The samples of dimension `(n_samples, feature_dim)`
         """
-        z = self.base().sample(torch.Size([n_samples]))
+        if type(n_samples) is int:
+            z = self.base().sample(torch.Size([n_samples]))
+        else:
+            z = self.base().sample(n_samples)
         return self.forward(z)[0]
     
     def loss(self, x):
@@ -294,18 +224,24 @@ def train(model, optimizer, data_loader, epochs, device):
     total_steps = len(data_loader)*epochs
     progress_bar = tqdm(range(total_steps), desc="Training")
 
+
     for epoch in range(epochs):
         data_iter = iter(data_loader)
+        running_loss = 0.0
+        batch_itter = 0
         for x in data_iter:
             x = x[0].to(device)
             optimizer.zero_grad()
             loss = model.loss(x)
+            running_loss += loss.item()
+            batch_itter += 1
             loss.backward()
             optimizer.step()
 
             # Update progress bar
             progress_bar.set_postfix(loss=f"⠀{loss.item():12.4f}", epoch=f"{epoch+1}/{epochs}")
             progress_bar.update()
+        print(f"\nEpoch {epoch+1}/{epochs} loss: {loss.item():.4f} avg. loss: {running_loss/batch_itter:.4f}")
 
 
 if __name__ == "__main__":
@@ -372,7 +308,7 @@ if __name__ == "__main__":
     base_mask = torch.Tensor([1 if (i+j) % 2 == 0 else 0 for i in range(28) for j in range(28)])
     
     
-    num_transformations = 25
+    num_transformations = 5
     num_hidden = 8
 
     # Make a mask that is 1 for the first half of the features and 0 for the second half

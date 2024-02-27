@@ -12,6 +12,7 @@ from torch.nn import functional as F
 from tqdm import tqdm
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
+from flow import Flow, MaskedCouplingLayer
 
 
 class GaussianPrior(nn.Module):
@@ -65,38 +66,6 @@ class MixedGaussianPrior(nn.Module):
         mix = td.Categorical(torch.ones(self.K,))
         comp = td.Independent(td.Normal(loc=self.mean, scale=self.std), 1)
         return td.MixtureSameFamily(mix, comp)
-
-
-class FlowPrior(nn.Module):
-    def __init__(self, scale_net, translation_net, mask):
-        """
-        Define a prior distribution based on a normalizing flow.
-
-        Parameters:
-        scale_net: [torch.nn.Module]
-           A neural network that takes as input a tensor of dimension `(batch_size, M)`
-           and outputs a tensor of dimension `(batch_size, M)`.
-        translation_net: [torch.nn.Module]
-           A neural network that takes as input a tensor of dimension `(batch_size, M)`
-           and outputs a tensor of dimension `(batch_size, M)`.
-        mask: [torch.Tensor]
-           A tensor of dimension `(M, M)` that defines the mask for the autoregressive transformation.
-        """
-        super(FlowPrior, self).__init__()
-        self.scale_net = scale_net
-        self.translation_net = translation_net
-        self.mask = mask
-
-    def forward(self):
-        """
-        Return the prior distribution.
-
-        Returns:
-        prior: [torch.distributions.Distribution]
-        """
-        base_dist = td.Independent(td.Normal(loc=torch.zeros(self.M), scale=torch.ones(self.M)), 1)
-        flow = td.TransformedDistribution(base_dist, [td.transforms.MaskedAutoregressiveFlow(self.scale_net, self.translation_net, self.mask)])
-        return flow
 
 
 class GaussianEncoder(nn.Module):
@@ -156,7 +125,7 @@ class VAE(nn.Module):
     """
     Define a Variational Autoencoder (VAE) model.
     """
-    def __init__(self, prior, decoder, encoder, type=None):
+    def __init__(self, prior, decoder, encoder, type=None, device="cpu"):
         """
         Parameters:
         prior: [torch.nn.Module] 
@@ -165,6 +134,8 @@ class VAE(nn.Module):
               The decoder distribution over the data space.
         encoder: [torch.nn.Module]
                 The encoder distribution over the latent space.
+        device: [str]
+            The device to run the network on
         """
             
         super(VAE, self).__init__()
@@ -172,6 +143,7 @@ class VAE(nn.Module):
         self.decoder = decoder
         self.encoder = encoder
         self.type = type
+        self.device = device
 
     def elbo(self, x):
         """
@@ -184,14 +156,17 @@ class VAE(nn.Module):
            Number of samples to use for the Monte Carlo estimate of the ELBO.
         """
         q = self.encoder(x)
-        z = q.rsample() # Reparameterization trick
+        z = q.rsample().to(self.device)  # Reparameterization trick
 
         # MOG manually compute KL divergence
-        if self.type == "mog":
-            log_prob_prior = self.prior().log_prob(z)
+        if self.type in ["mix", "flow"]:
+            if self.type == "mix":
+                log_prob_prior = self.prior().log_prob(z)
+            elif self.type == "flow":
+                log_prob_prior = self.prior.log_prob(z)
             log_prob_q = q.log_prob(z)
-            kl = (log_prob_q - log_prob_prior).mean()
-            elbo = self.decoder(z).log_prob(x).mean() - kl
+            kl = log_prob_q - log_prob_prior
+            elbo = torch.mean(self.decoder(z).log_prob(x) - kl, dim=0)
 
         else:
             elbo = torch.mean(self.decoder(z).log_prob(x) - td.kl_divergence(q, self.prior()), dim=0)
@@ -208,7 +183,11 @@ class VAE(nn.Module):
         n_samples: [int]
            Number of samples to generate.
         """
-        z = self.prior().sample(torch.Size([n_samples]))
+        if self.type == "flow":
+            z = self.prior.sample(torch.Size([n_samples]))
+        else:
+            z = self.prior().sample(torch.Size([n_samples]))
+
         return self.decoder(z).sample()
     
     def forward(self, x):
@@ -239,28 +218,36 @@ def train(model, optimizer, data_loader, epochs, device):
         The device to use for training.
     """
     model.train()
-    num_steps = len(data_loader)*epochs
-    epoch = 0
 
-    total_steps = len(data_loader)*epochs
+    total_steps = len(data_loader) * epochs
     progress_bar = tqdm(range(total_steps), desc="Training")
+    losses = []
 
     for epoch in range(epochs):
         data_iter = iter(data_loader)
+        running_loss = 0.0
+        batch_itter = 0
         for x in data_iter:
             x = x[0].to(device)
             optimizer.zero_grad()
             loss = model(x)
+            running_loss += loss.item()
+            batch_itter += 1
             loss.backward()
             optimizer.step()
 
-            # Report
-            if step % 5 ==0 :
-                loss = loss.detach().cpu()
-                pbar.set_description(f"epoch={epoch}, step={step}, loss={loss:.1f}")
+            losses.append(loss.item())
 
-            if (step+1) % len(data_loader) == 0:
-                epoch += 1
+            # Update progress bar
+            progress_bar.set_postfix(loss=loss.item(), epoch=f"{epoch + 1}/{epochs}")
+            progress_bar.update()
+        print(f"\nEpoch {epoch+1}/{epochs} loss: {loss.item():.4f} avg. loss: {running_loss/batch_itter:.4f}")
+
+    plt.plot(losses)
+    plt.xlabel('Training Step')
+    plt.ylabel('Loss')
+    plt.title('Training Loss')
+    plt.show()
 
 
 if __name__ == "__main__":
@@ -311,11 +298,24 @@ if __name__ == "__main__":
     M = args.latent_dim
     K = 5
     if args.prior == "gaussian":
-        prior = GaussianPrior()
+        prior = GaussianPrior(M)
     elif args.prior =="mix":
         prior = MixedGaussianPrior(M, K)
     elif args.prior == "flow":
-        prior = FlowPrior(M, args)
+        D = 28 * 28
+        M=D
+        base = GaussianPrior(D)
+        # Define transformations
+        transformations = []
+        num_transformations = 5
+        num_hidden = 8
+
+        for i in range(num_transformations):
+            mask = torch.rand(28 * 28)
+            scale_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D), nn.Tanh())
+            translation_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D))
+            transformations.append(MaskedCouplingLayer(scale_net, translation_net, mask))
+        prior = Flow(base, transformations).to(device)
 
 
     # Define encoder and decoder networks
@@ -341,7 +341,7 @@ if __name__ == "__main__":
     decoder = BernoulliDecoder(decoder_net)
     encoder = GaussianEncoder(encoder_net)
     # Change to mog_prior to use mixture of gaussians
-    model = VAE(prior, decoder, encoder, mog = False).to(device)
+    model = VAE(prior, decoder, encoder, type=args.prior, device=device).to(device)
 
     # Choose mode to run
     if args.mode == 'train':
