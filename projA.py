@@ -13,6 +13,8 @@ from tqdm import tqdm
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
+sns.set_theme()
 
 
 class GaussianPrior(nn.Module):
@@ -241,8 +243,8 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'eval', 'plot1', 'plot2'], help='what to do when running the script (default: %(default)s)')
-    parser.add_argument('--model', type=str, default='model_MoG_M2.pt', help='file to save model to or load model from (default: %(default)s)')
-    parser.add_argument('--samples', type=str, default='samples_MoG_M2.png', help='file to save samples in (default: %(default)s)')
+    parser.add_argument('--model', type=str, default='model_sg_M2.pt', help='file to save model to or load model from (default: %(default)s)')
+    parser.add_argument('--samples', type=str, default='model_sg_M2.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--batch-size', type=int, default=50, metavar='N', help='batch size for training (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=10, metavar='N', help='number of epochs to train (default: %(default)s)')
@@ -378,40 +380,38 @@ if __name__ == "__main__":
 
         with torch.no_grad():
             for batch in mnist_test_loader:
-
                 merged_data.append(batch[0])
-                # t = model.encoder(batch[0])
-                # samples = t.sample()
-                # zlist.append(samples)
-                labellist.append(batch[1])
-        # z = torch.cat(zlist)
-        # print("z.size(): ", z.size())
-        merged_data = torch.cat(merged_data, dim=0)
-        print("merged_data.size(): ", merged_data.size())
 
-        x = torch.linspace(-3, 3, 80)
-        y = torch.linspace(-3, 3, 80)
-        X, Y = torch.meshgrid(x, y)
-        coordi = torch.stack((X.flatten(), Y.flatten()), dim=1).reshape(-1, 2)
-        print("coordi.size():", coordi.size())
+            merged_data = torch.cat(merged_data, dim=0)
 
-        sampleloc = torch.unsqueeze(coordi, dim=0)
-        samplelocs = sampleloc.repeat(merged_data.size(0), 1, 1)
-        print("samplelocs.size():", samplelocs.size())
-        
-        Posteriordist = encoder.forward(merged_data)
-        prob = Posteriordist.log_prob(samplelocs).exp().detach()
-        mean_prob = torch.mean(prob, dim = 1)
-        print("prob.size(): ", prob.size())
-        print("mean_prob.size(): ", mean_prob.size())
-        print("mean_prob", mean_prob)
+            Posteriordist = model.encoder.forward(merged_data).mean
+            x_post, y_post = Posteriordist[:, 0], Posteriordist[:, 1]
 
-        X = coordi[:, 0]
-        Y = coordi[:, 1]
-        plt.scatter(X, Y, c=mean_prob, cmap='grey', s=3)  
-        plt.colorbar()  
+            x = torch.linspace(-5, 5, 200)
+            y = torch.linspace(-5, 5, 200)
+            # x = torch.normal(mean=0, std=1, size=(100,))
+            # y = torch.normal(mean=0, std=1, size=(100,))
+            X, Y = torch.meshgrid(x, y)
+            coordi = torch.stack((X.flatten(), Y.flatten()), dim=1).reshape(-1, 2)
+            print("coordi.size():", coordi.size())        
+            print("x_post.size(): ", x_post.size())
+            print("Posteriordist.size(): ", Posteriordist.size())
+
+            X = coordi[:, 0]
+            Y = coordi[:, 1]
+
+            prob_density = model.prior.forward().log_prob(
+            torch.tensor(np.column_stack((X, Y)))).reshape(x.size(0), -1)        
+
+
+        print("prob_density:", prob_density.size())
+        # max_value, max_index = torch.max(prob_density)
+        # print("max_value:", max_value.item())
+
+        plt.contourf(x.detach().numpy(), y.detach().numpy(), prob_density.detach().numpy(), extent=[x.min(), x.max(), y.min(), y.max()])  
+        plt.scatter(x_post.detach().numpy(), y_post.detach().numpy(), s=1)
+        # plt.colorbar()
         plt.show()
-        # plt.plot(x.numpy(), prob.numpy())
         plt.savefig("plot2_" + args.samples)
 
 
