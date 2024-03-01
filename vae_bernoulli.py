@@ -302,18 +302,20 @@ if __name__ == "__main__":
     elif args.prior =="mix":
         prior = MixedGaussianPrior(M, K)
     elif args.prior == "flow":
-        D = 28 * 28
-        M=D
-        base = GaussianPrior(D)
+        base = GaussianPrior(M)
         # Define transformations
         transformations = []
         num_transformations = 5
         num_hidden = 8
+        base_mask = torch.Tensor([1 if i % 2 == 0 else 0 for i in range(M)])
 
         for i in range(num_transformations):
-            mask = torch.rand(28 * 28)
-            scale_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D), nn.Tanh())
-            translation_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D))
+            if i%2 == 0:
+                mask = (1-base_mask) # Flip the mask
+            else:
+                mask = base_mask
+            scale_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M), nn.Tanh())
+            translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
             transformations.append(MaskedCouplingLayer(scale_net, translation_net, mask))
         prior = Flow(base, transformations).to(device)
 
