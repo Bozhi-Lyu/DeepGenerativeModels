@@ -6,7 +6,8 @@ import torch.nn as nn
 import torch.distributions as td
 import torch.nn.functional as F
 from tqdm import tqdm
-
+from torchvision import transforms
+import unet 
 
 class DDPM(nn.Module):
     def __init__(self, network, beta_1=1e-4, beta_T=2e-2, T=100):
@@ -50,24 +51,22 @@ class DDPM(nn.Module):
         batch_size, input_dim = x.shape
         
         # Sample t ~ Uniform({1, ..., T})
-        t = torch.randint(1, self.T + 1, (batch_size, input_dim))
-        print(t.shape)
+        t = torch.randint(1, self.T + 1, (batch_size, 1)) # size (batch_size, 1)
         
-        alpha_t = self.alpha_cumprod[t-1].view(-1, 1)
+        alpha_t = self.alpha_cumprod[t-1] # size (batch_size, 1)
         
         # Sample epsilon ~ N(0, I)
-        epsilon = torch.randn_like(x[0])
-        
+        epsilon = torch.randn_like(x) # size (batch_size, input_dim)
         
         # Compute x_t
-        x_t = torch.sqrt(alpha_t) * x[0] + torch.sqrt(1 - alpha_t) * epsilon
+        x_t = torch.sqrt(alpha_t) * x + torch.sqrt(1 - alpha_t) * epsilon # size (batch_size,)
         
         # Predict epsilon_0 (noise prediction)
         epsilon_0_pred = self.network(x_t, t-1)
         
-        # Negative ELBO
-        neg_elbo = (epsilon - epsilon_0_pred)**2
-    
+        # Negative ELBO, sum over the input dimensions representing the nefative ELBO for each data point in the batch
+        neg_elbo = ((epsilon - epsilon_0_pred)**2).sum(dim=1) #size (batch_size,)
+
         return neg_elbo
 
     def sample(self, shape):
@@ -81,19 +80,19 @@ class DDPM(nn.Module):
         [torch.Tensor]
             The generated samples.
         """
+        
+        
         # Sample x_t for t=T (i.e., Gaussian noise)
         x_t = torch.randn(shape).to(self.alpha.device)
-        sigma_t = torch.sqrt(self.beta_T)
-
+        
         # Sample x_t given x_{t+1} until x_0 is sampled
-        for t in range(self.T-1, -1, -1):
+        for t in range(self.T-1, 0, -1):
             ### Implement the remaining of Algorithm 2 here ###
-            if t > 1:
-                z = torch.randn(shape)
-                x_t = (1 / torch.sqrt(self.alpha[t])) * (x_t - ((1 - self.alpha[t]) / torch.sqrt(1 - self.alpha_cumprod[t])) * self.network(x_t, t)) + sigma_t * z
-            else:
-                z = 0
-                x_t = (1 / torch.sqrt(self.alpha[t])) * (x_t - ((1 - self.alpha[t]) / torch.sqrt(1 - self.alpha_cumprod[t])) * self.network(x_t, t)) + sigma_t * z
+            t_tensor = torch.full((shape[0],1), t, dtype=torch.float).to(self.alpha.device)
+            z = torch.randn(shape).to(self.alpha.device) if t > 1 else torch.zeros(shape).to(self.alpha.device)
+            sigma_t = torch.sqrt(self.beta[t]).unsqueeze(0) 
+            epsilon_theta = self.network(x_t, t_tensor)
+            x_t = (1 / torch.sqrt(self.alpha[t])) * (x_t - (1 - self.alpha[t]) / torch.sqrt(1 - self.alpha_cumprod[t]) * epsilon_theta) + sigma_t * z
         
         return x_t
 
@@ -131,6 +130,7 @@ def train(model, optimizer, data_loader, epochs, device):
 
     total_steps = len(data_loader)*epochs
     progress_bar = tqdm(range(total_steps), desc="Training")
+    losses = []
 
     for epoch in range(epochs):
         data_iter = iter(data_loader)
@@ -140,12 +140,23 @@ def train(model, optimizer, data_loader, epochs, device):
             x = x.to(device)
             optimizer.zero_grad()
             loss = model.loss(x)
+
             loss.backward()
             optimizer.step()
+            
+            losses.append(loss.item())
 
             # Update progress bar
             progress_bar.set_postfix(loss=f"⠀{loss.item():12.4f}", epoch=f"{epoch+1}/{epochs}")
             progress_bar.update()
+        print(f"Epoch {epoch+1}/{epochs} loss: {loss.mean()}")
+    
+    plt.plot(losses)
+    plt.xlabel('Training Step')
+    plt.ylabel('Loss')
+    plt.title('Training Loss')
+    plt.show()
+    
 
 
 class FcNetwork(nn.Module):
@@ -187,7 +198,7 @@ if __name__ == "__main__":
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'test'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'test', 'sample_minst'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--data', type=str, default='tg', choices=['tg', 'cb', 'mnist'], help='dataset to use {tg: two Gaussians, cb: chequerboard} (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
@@ -200,20 +211,32 @@ if __name__ == "__main__":
     print('# Options')
     for key, value in sorted(vars(args).items()):
         print(key, '=', value)
-
-    # Generate the data
-    n_data = 10000000
-    toy = {'tg': ToyData.TwoGaussians, 'cb': ToyData.Chequerboard}[args.data]()
-    transform = lambda x: (x-0.5)*2.0
-    train_loader = torch.utils.data.DataLoader(transform(toy().sample((n_data,))), batch_size=args.batch_size, shuffle=True)
-    test_loader = torch.utils.data.DataLoader(transform(toy().sample((n_data,))), batch_size=args.batch_size, shuffle=True)
-
-    # Get the dimension of the dataset
-    D = next(iter(train_loader)).shape[1]
+    
+    if args.data == 'mnist':
+        transform=transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: x + torch.rand(x.shape)/255), 
+                                  transforms.Lambda(lambda x: (x-0.5)*2.0), transforms.Lambda(lambda x: x.flatten())]
+                                )
+        train_data = datasets.MNIST('data/', train=True, download=True, transform=transform)
+        test_data = datasets.MNIST('data/', train=False, download=True, transform=transform)
+        
+        train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
+        test_loader = torch.utils.data.DataLoader(test_data, batch_size=args.batch_size, shuffle=True)
+        # Get the dimension of the dataset
+        D = next(iter(train_loader))[0].shape[1]
+    else:
+        # Generate the data
+        n_data = 10000000
+        toy = {'tg': ToyData.TwoGaussians, 'cb': ToyData.Chequerboard}[args.data]()
+        transform = lambda x: (x-0.5)*2.0
+        train_loader = torch.utils.data.DataLoader(transform(toy().sample((n_data,))), batch_size=args.batch_size, shuffle=True)
+        test_loader = torch.utils.data.DataLoader(transform(toy().sample((n_data,))), batch_size=args.batch_size, shuffle=True)
+        # Get the dimension of the dataset
+        D = next(iter(train_loader)).shape[1] # torch.Size([10000, 2])
 
     # Define the network
     num_hidden = 64
-    network = FcNetwork(D, num_hidden)
+    #network = FcNetwork(D, num_hidden)
+    network = unet.Unet()
 
     # Set the number of steps in the diffusion process
     T = 1000
@@ -258,5 +281,30 @@ if __name__ == "__main__":
         ax.set_ylim(toy.ylim)
         ax.set_aspect('equal')
         fig.colorbar(im)
+        plt.savefig(args.samples)
+        plt.close()
+    
+    elif args.mode == 'sample_mnist':
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        # Load the model
+        model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
+
+        # Generate samples
+        model.eval()
+        with torch.no_grad():
+            samples = (model.sample((100,D))).cpu() 
+        
+        # transform the samples back to the original shape 28*28        
+        samples = (samples + 1) / 2
+        samples = samples.view(-1, 1, 28, 28)
+        
+        fig, axs = plt.subplots(10, 10, figsize=(10, 10))
+        for i, ax in enumerate(axs.flat):  # axs.flat is used to iterate over a 2D array as if it's flat
+            if i < len(samples):  # Check to avoid IndexError in case the number of samples is less than 15
+                ax.imshow(samples[i].squeeze(), cmap='gray')  # Display the ith sample
+                ax.axis('off')  # Hide the axis
+
         plt.savefig(args.samples)
         plt.close()

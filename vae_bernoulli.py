@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from torch.nn import functional as F
 from tqdm import tqdm
+torch.manual_seed(1234)
 
 
 
