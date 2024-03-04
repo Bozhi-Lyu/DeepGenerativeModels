@@ -368,7 +368,7 @@ if __name__ == "__main__":
             plt.scatter(z1[labels == i], z2[labels == i], c=colors[i], label=str(i), s=3)
         plt.legend()
 
-        plt.savefig(args.samples)       
+        plt.savefig("plot1_" + args.samples)       
 
     elif args.mode == 'plot2':
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
@@ -377,6 +377,7 @@ if __name__ == "__main__":
         # zlist = []
         labellist = []
         merged_data = []
+        plot_range = [-20, 20]
 
         with torch.no_grad():
             for batch in mnist_test_loader:
@@ -387,10 +388,8 @@ if __name__ == "__main__":
             Posteriordist = model.encoder.forward(merged_data).mean
             x_post, y_post = Posteriordist[:, 0], Posteriordist[:, 1]
 
-            x = torch.linspace(-5, 5, 200)
-            y = torch.linspace(-5, 5, 200)
-            # x = torch.normal(mean=0, std=1, size=(100,))
-            # y = torch.normal(mean=0, std=1, size=(100,))
+            x = torch.linspace(plot_range[0], plot_range[1], 200)
+            y = torch.linspace(plot_range[0], plot_range[1], 200)
             X, Y = torch.meshgrid(x, y)
             coordi = torch.stack((X.flatten(), Y.flatten()), dim=1).reshape(-1, 2)
             print("coordi.size():", coordi.size())        
@@ -405,13 +404,16 @@ if __name__ == "__main__":
 
 
         print("prob_density:", prob_density.size())
-        # max_value, max_index = torch.max(prob_density)
-        # print("max_value:", max_value.item())
 
-        plt.contourf(x.detach().numpy(), y.detach().numpy(), prob_density.detach().numpy(), extent=[x.min(), x.max(), y.min(), y.max()])  
-        plt.scatter(x_post.detach().numpy(), y_post.detach().numpy(), s=1)
-        # plt.colorbar()
-        plt.show()
+        
+
+        plt.contourf(x.detach().numpy(), y.detach().numpy(), prob_density.detach().numpy())  
+        plt.scatter(x_post.detach().numpy(), y_post.detach().numpy(), s=1, label='Posterior Samples')
+        plt.colorbar()
+        plt.xlabel('M1')
+        plt.ylabel('M2')
+        plt.xlim([plot_range[0], plot_range[1]])
+        plt.ylim([plot_range[0], plot_range[1]])
         plt.savefig("plot2_" + args.samples)
 
 
