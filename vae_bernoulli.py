@@ -398,8 +398,8 @@ if __name__ == "__main__":
 
             x_post, y_post = Posteriordist[:, 0], Posteriordist[:, 1]
             if args.prior == "flow":
-                x = torch.linspace(-30, 45, 2000)
-                y = torch.linspace(-65, 25, 2000)
+                x = torch.linspace(-40, 40, 2000)
+                y = torch.linspace(-40, 40, 2000)
             else:
                 x = torch.linspace(-5, 5, 200)
                 y = torch.linspace(-5, 5, 200)
@@ -423,6 +423,8 @@ if __name__ == "__main__":
         plt.contourf(x.detach().numpy(), y.detach().numpy(), prob_density.detach().numpy(),
                      extent=[x.min(), x.max(), y.min(), y.max()], levels=50)
         plt.scatter(y_post.detach().numpy(), x_post.detach().numpy(), s=1)
+        plt.xlim((x.min(), x.max()))
+        plt.ylim((y.min(), y.max()))
         plt.colorbar()
         plt.show()
         plt.savefig("plot2_" + args.samples)
