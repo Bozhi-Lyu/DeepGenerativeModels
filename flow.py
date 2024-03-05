@@ -599,21 +599,18 @@ if __name__ == "__main__":
         # Generate samples
         model.eval()
         with torch.no_grad():
-            sample_data = (model.sample((100,D))).cpu() 
+            sample_data = (model.sample(100)).cpu()
         
         # transform the samples back to the original shape 28*28        
         sample_data = sample_data.view(-1, 1, 28, 28)
-        
+
         # transform the samples to be consistent with the real data
         sample_data = F.interpolate(sample_data, size=(299, 299), mode='bilinear', align_corners=False)
+
         sample_data_rgb = sample_data.repeat(1, 3, 1, 1)
-        
-        print('samples generated')
-        
 
         fid_value = calculate_fid_given_paths(sample_data_rgb, real_data, 32, args.device, dims=64)
         print(f"FID: {fid_value}")
-                
                 
                 
                 
