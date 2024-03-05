@@ -12,7 +12,12 @@ from torch.nn import functional as F
 from tqdm import tqdm
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('TkAgg')
 from flow import Flow, MaskedCouplingLayer
+import numpy as np
+import seaborn as sns
+sns.set_theme()
 
 
 class GaussianPrior(nn.Module):
@@ -53,8 +58,11 @@ class MixedGaussianPrior(nn.Module):
         super(MixedGaussianPrior, self).__init__()
         self.M = M
         self.K = K
-        self.mean = nn.Parameter(torch.zeros(self.K, self.M), requires_grad=False)
-        self.std = nn.Parameter(torch.ones(self.K, self.M), requires_grad=False)
+
+        self.mean = nn.Parameter(torch.rand(self.K, self.M))
+        self.std = nn.Parameter(torch.randn(self.K, self.M))
+        self.weights = nn.Parameter(torch.ones(self.K))
+        self.softmax = nn.Softmax(dim=0)
 
     def forward(self):
         """
@@ -63,8 +71,11 @@ class MixedGaussianPrior(nn.Module):
         Returns:
         prior: [torch.distributions.Distribution]
         """
-        mix = td.Categorical(torch.ones(self.K,))
-        comp = td.Independent(td.Normal(loc=self.mean, scale=self.std), 1)
+        stds = torch.exp(self.std)
+        weights = self.softmax(self.weights)
+        mix = td.Categorical(probs=weights)
+        comp = torch.distributions.Independent(td.Normal(self.mean, stds), 1)
+
         return td.MixtureSameFamily(mix, comp)
 
 
@@ -171,8 +182,6 @@ class VAE(nn.Module):
         else:
             elbo = torch.mean(self.decoder(z).log_prob(x) - td.kl_divergence(q, self.prior()), dim=0)
 
-        #print(f'x: {x.shape}, z: {z.shape}, elbo: {elbo.shape}')
-        #print(f'part1: {self.decoder(z).log_prob(x).shape}, part2: {td.kl_divergence(q, self.prior()).shape}')
         return elbo
 
     def sample(self, n_samples=1):
@@ -254,11 +263,12 @@ if __name__ == "__main__":
     from torchvision import datasets, transforms
     from torchvision.utils import save_image, make_grid
     import glob
+    torch.manual_seed(1234)
 
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample','eval','plot'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
@@ -266,6 +276,7 @@ if __name__ == "__main__":
     parser.add_argument('--epochs', type=int, default=10, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=32, metavar='N', help='dimension of latent variable (default: %(default)s)')
     parser.add_argument('--prior', type=str, default="gaussian", choices=['gaussian', 'mix', 'flow'], help='dimension of latent variable (default: %(default)s)')
+
     args = parser.parse_args()
     print('# Options')
     for key, value in sorted(vars(args).items()):
@@ -275,31 +286,21 @@ if __name__ == "__main__":
 
     # Load MNIST as binarized at 'thresshold' and create data loaders
     thresshold = 0.5
-    mnist_train_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=True, download=True, transform=transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Lambda(lambda x: (thresshold < x).float().squeeze())
-            ])),
-                                                     batch_size=args.batch_size,
-                                                     shuffle=True
+    mnist_train_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=True, download=True,
+                                                                    transform=transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: (thresshold < x).float().squeeze())])),
+                                                     batch_size=args.batch_size,shuffle=True
                                                      )
     mnist_test_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=False, download=True,
                                                                 transform=transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: (thresshold < x).float().squeeze())])),
                                                     batch_size=args.batch_size, shuffle=True)
 
-    # Load MNIST as grayscale and create data loaders
-    #mnist_train_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=True, download=True,
-    #                                                                transform=transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: x.squeeze())])),
-    #                                                batch_size=args.batch_size, shuffle=True)
-    #mnist_test_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=False, download=True,
-    #                                                            transform=transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: x.squeeze())])),
-    #                                                batch_size=args.batch_size, shuffle=True)
 
     # Define prior distribution
     M = args.latent_dim
-    K = 5
+    K = 10
     if args.prior == "gaussian":
         prior = GaussianPrior(M)
-    elif args.prior =="mix":
+    elif args.prior == "mix":
         prior = MixedGaussianPrior(M, K)
     elif args.prior == "flow":
         base = GaussianPrior(M)
@@ -342,7 +343,7 @@ if __name__ == "__main__":
     # Define VAE model
     decoder = BernoulliDecoder(decoder_net)
     encoder = GaussianEncoder(encoder_net)
-    # Change to mog_prior to use mixture of gaussians
+    # Change to mog_prior to use mixture of gaussian
     model = VAE(prior, decoder, encoder, type=args.prior, device=device).to(device)
 
     # Choose mode to run
@@ -367,33 +368,50 @@ if __name__ == "__main__":
 
     elif args.mode == 'eval':
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
-
-        # Evaluate model
         model.eval()
+        elbos = []
+        sum_elbo = 0
+
         with torch.no_grad():
-            for x, _ in mnist_test_loader:
-                x = x.to(device)
-                loss = model(x)
-                print(f'Loss: {loss.item()}')
-                break
+            for batch in mnist_test_loader:
+                images = batch[0]
+                elbo = model.elbo(images)
+                elbos.append(elbo)
+                sum_elbo += elbo.item()
+
+        print("Averaged elbo:", sum_elbo / (len(elbos)))
+
 
     elif args.mode == 'plot':
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
-
-        # Plot samples from the approximate posterior with their corresponding colour coded by class
-        # If latent dimensions is larger than 2, use PCA to reduce dimensionality onto the first two principal components
         model.eval()
+        labellist = []
+        merged_data = []
+
         with torch.no_grad():
-            for x, y in mnist_test_loader:
-                x = x.to(device)
-                z = model.encoder(x).mean
-                break
+            for batch in mnist_test_loader:
+                merged_data.append(batch[0])
 
-        pca = PCA(n_components=2)
-        z_pca = pca.fit_transform(z.cpu().numpy())
-        plt.scatter(z_pca[:, 0], z_pca[:, 1], c=y, cmap='tab10')
-        plt.colorbar()
+            merged_data = torch.cat(merged_data, dim=0)
+
+            Posteriordist = model.encoder.forward(merged_data).mean
+            x_post, y_post = Posteriordist[:, 0], Posteriordist[:, 1]
+
+            x = torch.linspace(-5, 5, 200)
+            y = torch.linspace(-5, 5, 200)
+            X, Y = torch.meshgrid(x, y)
+            coordi = torch.stack((X.flatten(), Y.flatten()), dim=1).reshape(-1, 2)
+
+            X = coordi[:, 0]
+            Y = coordi[:, 1]
+
+            prob_density = model.prior.forward().log_prob(
+                torch.tensor(np.column_stack((X, Y)))).reshape(x.size(0), -1)
+
+
+        plt.contourf(x.detach().numpy(), y.detach().numpy(), prob_density.detach().numpy(),
+                     extent=[x.min(), x.max(), y.min(), y.max()])
+        plt.scatter(x_post.detach().numpy(), y_post.detach().numpy(), s=1)
         plt.show()
-
-
+        plt.savefig("plot2_" + args.samples)
 
