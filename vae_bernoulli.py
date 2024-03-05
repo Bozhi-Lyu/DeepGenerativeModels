@@ -388,30 +388,42 @@ if __name__ == "__main__":
         labellist = []
         merged_data = []
 
-        with torch.no_grad():
+        with ((((torch.no_grad())))):
             for batch in mnist_test_loader:
                 merged_data.append(batch[0])
 
             merged_data = torch.cat(merged_data, dim=0)
 
             Posteriordist = model.encoder.forward(merged_data).mean
-            x_post, y_post = Posteriordist[:, 0], Posteriordist[:, 1]
 
-            x = torch.linspace(-5, 5, 200)
-            y = torch.linspace(-5, 5, 200)
+            x_post, y_post = Posteriordist[:, 0], Posteriordist[:, 1]
+            if args.prior == "flow":
+                x = torch.linspace(-30, 45, 2000)
+                y = torch.linspace(-65, 25, 2000)
+            else:
+                x = torch.linspace(-5, 5, 200)
+                y = torch.linspace(-5, 5, 200)
             X, Y = torch.meshgrid(x, y)
             coordi = torch.stack((X.flatten(), Y.flatten()), dim=1).reshape(-1, 2)
 
             X = coordi[:, 0]
             Y = coordi[:, 1]
 
-            prob_density = model.prior.forward().log_prob(
-                torch.tensor(np.column_stack((X, Y)))).reshape(x.size(0), -1)
+            if args.prior == "flow":
+                prob_density = model.prior.log_prob(
+                    torch.tensor(np.column_stack((X, Y))))
+                #print(prob_density.size())
+                prob_density = prob_density.reshape(x.size(0), -1)
+                #print(prob_density.size())
 
+            else:
+                prob_density = model.prior.forward().log_prob(
+                    torch.tensor(np.column_stack((X, Y)))).reshape(x.size(0), -1)
 
         plt.contourf(x.detach().numpy(), y.detach().numpy(), prob_density.detach().numpy(),
-                     extent=[x.min(), x.max(), y.min(), y.max()])
-        plt.scatter(x_post.detach().numpy(), y_post.detach().numpy(), s=1)
+                     extent=[x.min(), x.max(), y.min(), y.max()], levels=50)
+        plt.scatter(y_post.detach().numpy(), x_post.detach().numpy(), s=1)
+        plt.colorbar()
         plt.show()
         plt.savefig("plot2_" + args.samples)
 
