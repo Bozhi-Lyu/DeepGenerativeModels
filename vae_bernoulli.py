@@ -387,6 +387,7 @@ if __name__ == "__main__":
         model.eval()
         labellist = []
         merged_data = []
+        plot_range = [-20, 20]
 
         with torch.no_grad():
             for batch in mnist_test_loader:
@@ -397,8 +398,8 @@ if __name__ == "__main__":
             Posteriordist = model.encoder.forward(merged_data).mean
             x_post, y_post = Posteriordist[:, 0], Posteriordist[:, 1]
 
-            x = torch.linspace(-5, 5, 200)
-            y = torch.linspace(-5, 5, 200)
+            x = torch.linspace(plot_range[0], plot_range[1], 200)
+            y = torch.linspace(plot_range[0], plot_range[1], 200)
             X, Y = torch.meshgrid(x, y)
             coordi = torch.stack((X.flatten(), Y.flatten()), dim=1).reshape(-1, 2)
 
@@ -406,12 +407,13 @@ if __name__ == "__main__":
             Y = coordi[:, 1]
 
             prob_density = model.prior.forward().log_prob(
-                torch.tensor(np.column_stack((X, Y)))).reshape(x.size(0), -1)
+            torch.tensor(np.column_stack((X, Y)))).reshape(x.size(0), -1)        
 
-
-        plt.contourf(x.detach().numpy(), y.detach().numpy(), prob_density.detach().numpy(),
-                     extent=[x.min(), x.max(), y.min(), y.max()])
-        plt.scatter(x_post.detach().numpy(), y_post.detach().numpy(), s=1)
-        plt.show()
+        plt.contourf(x.detach().numpy(), y.detach().numpy(), prob_density.detach().numpy())  
+        plt.scatter(x_post.detach().numpy(), y_post.detach().numpy(), s=1, label='Posterior Samples')
+        plt.colorbar()
+        plt.xlabel('M1')
+        plt.ylabel('M2')
+        plt.xlim([plot_range[0], plot_range[1]])
+        plt.ylim([plot_range[0], plot_range[1]])
         plt.savefig("plot2_" + args.samples)
-
