@@ -16,6 +16,7 @@ import matplotlib
 matplotlib.use('TkAgg')
 from flow import Flow, MaskedCouplingLayer
 import numpy as np
+from fid import calculate_fid_given_paths
 import seaborn as sns
 sns.set_theme()
 
@@ -268,7 +269,7 @@ if __name__ == "__main__":
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample','eval','plot'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample','eval','plot', 'fid'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
@@ -429,4 +430,32 @@ if __name__ == "__main__":
         plt.ylim([plot_range[0], plot_range[1]])
         plt.show()
         plt.savefig("plot2_" + args.samples)
+    
+    elif args.mode == 'fid':
+        transform = transforms.Compose([
+            transforms.Resize(299),  # Resize to Inception v3's input size
+            transforms.Grayscale(num_output_channels=3),  # Make sure to have 3 channels like Inception expects
+            transforms.ToTensor(),
+            ])
+        
+        real_data = datasets.MNIST('data/', train=True, download=True, transform=transform)
+
+        # Load the model
+        model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
+
+        # Generate samples
+        model.eval()
+        with torch.no_grad():
+            sample_data = (model.sample(100)).cpu()
+        
+        # transform the samples back to the original shape 28*28        
+        sample_data = sample_data.view(-1, 1, 28, 28)
+
+        # transform the samples to be consistent with the real data
+        sample_data = F.interpolate(sample_data, size=(299, 299), mode='bilinear', align_corners=False)
+
+        sample_data_rgb = sample_data.repeat(1, 3, 1, 1)
+
+        fid_value = calculate_fid_given_paths(sample_data_rgb, real_data, 32, args.device, dims=64)
+        print(f"FID: {fid_value}")
 

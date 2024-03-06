@@ -7,10 +7,8 @@ import torch.distributions as td
 import torch.nn.functional as F
 from tqdm import tqdm
 from torchvision import transforms
-import unet
-import matplotlib
-matplotlib.use('TkAgg')
-import matplotlib.pyplot as plt
+import unet 
+from fid import calculate_fid_given_paths
 
 class DDPM(nn.Module):
     def __init__(self, network, beta_1=1e-4, beta_T=2e-2, T=100):
@@ -83,7 +81,8 @@ class DDPM(nn.Module):
         [torch.Tensor]
             The generated samples.
         """
-
+        
+        
         # Sample x_t for t=T (i.e., Gaussian noise)
         x_t = torch.randn(shape).to(self.alpha.device)
         
@@ -136,8 +135,6 @@ def train(model, optimizer, data_loader, epochs, device):
 
     for epoch in range(epochs):
         data_iter = iter(data_loader)
-        running_loss = 0.0
-        batch_itter = 0
         for x in data_iter:
             if isinstance(x, (list, tuple)):
                 x = x[0]
@@ -147,19 +144,20 @@ def train(model, optimizer, data_loader, epochs, device):
 
             loss.backward()
             optimizer.step()
-
+            
             losses.append(loss.item())
 
             # Update progress bar
             progress_bar.set_postfix(loss=f"⠀{loss.item():12.4f}", epoch=f"{epoch+1}/{epochs}")
             progress_bar.update()
-        print(f"Epoch {epoch+1}/{epochs} loss: {loss.item():.4f} avg. loss: {running_loss/batch_itter:.4f}")
-
+        print(f"Epoch {epoch+1}/{epochs} loss: {loss.mean()}")
+    
     plt.plot(losses)
     plt.xlabel('Training Step')
     plt.ylabel('Loss')
     plt.title('Training Loss')
     plt.show()
+    
 
 
 class FcNetwork(nn.Module):
@@ -201,7 +199,7 @@ if __name__ == "__main__":
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'sample_mnist'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'test', 'sample-minst', 'fid'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--data', type=str, default='tg', choices=['tg', 'cb', 'mnist'], help='dataset to use {tg: two Gaussians, cb: chequerboard} (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
@@ -214,15 +212,14 @@ if __name__ == "__main__":
     print('# Options')
     for key, value in sorted(vars(args).items()):
         print(key, '=', value)
-
+    
     if args.data == 'mnist':
-        transform = transforms.Compose(
-            [transforms.ToTensor(), transforms.Lambda(lambda x: x + torch.rand(x.shape) / 255),
-             transforms.Lambda(lambda x: (x - 0.5) * 2.0), transforms.Lambda(lambda x: x.flatten())]
-            )
+        transform=transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: x + torch.rand(x.shape)/255), 
+                                  transforms.Lambda(lambda x: (x-0.5)*2.0), transforms.Lambda(lambda x: x.flatten())]
+                                )
         train_data = datasets.MNIST('data/', train=True, download=True, transform=transform)
         test_data = datasets.MNIST('data/', train=False, download=True, transform=transform)
-
+        
         train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
         test_loader = torch.utils.data.DataLoader(test_data, batch_size=args.batch_size, shuffle=True)
         # Get the dimension of the dataset
@@ -231,19 +228,15 @@ if __name__ == "__main__":
         # Generate the data
         n_data = 10000000
         toy = {'tg': ToyData.TwoGaussians, 'cb': ToyData.Chequerboard}[args.data]()
-        transform = lambda x: (x - 0.5) * 2.0
-        train_loader = torch.utils.data.DataLoader(transform(toy().sample((n_data,))), batch_size=args.batch_size,
-                                                   shuffle=True)
-        test_loader = torch.utils.data.DataLoader(transform(toy().sample((n_data,))), batch_size=args.batch_size,
-                                                  shuffle=True)
+        transform = lambda x: (x-0.5)*2.0
+        train_loader = torch.utils.data.DataLoader(transform(toy().sample((n_data,))), batch_size=args.batch_size, shuffle=True)
+        test_loader = torch.utils.data.DataLoader(transform(toy().sample((n_data,))), batch_size=args.batch_size, shuffle=True)
         # Get the dimension of the dataset
-        D = next(iter(train_loader)).shape[1]  # torch.Size([10000, 2])
+        D = next(iter(train_loader)).shape[1] # torch.Size([10000, 2])
 
     # Define the network
     num_hidden = 64
-    # network = FcNetwork(D, num_hidden)
-
-    # use the U-Net architecture
+    #network = FcNetwork(D, num_hidden)
     network = unet.Unet()
 
     # Set the number of steps in the diffusion process
@@ -273,10 +266,9 @@ if __name__ == "__main__":
         # Generate samples
         model.eval()
         with torch.no_grad():
-            samples = (model.sample((1000,D))).cpu()
+            samples = (model.sample((10000,D))).cpu() 
 
         # Transform the samples back to the original space
-        # use toy data
         samples = samples /2 + 0.5
 
         # Plot the density of the toy data and the model samples
@@ -292,33 +284,62 @@ if __name__ == "__main__":
         fig.colorbar(im)
         plt.savefig(args.samples)
         plt.close()
+    
+    elif args.mode == 'sample-mnist':
+        import matplotlib.pyplot as plt
+        import numpy as np
+        from torchvision.utils import save_image
 
-    elif args.mode == 'sample_mnist':
+        # Load the model
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
+
+        # Generate samples
         model.eval()
         with torch.no_grad():
-            samples = (model.sample((100, D))).cpu()
-
-        # Transform the samples back to the original space 28*28
-        # use MNIST dataset
+            samples = (model.sample((100,D))).cpu() 
+        
+        # transform the samples back to the original shape 28*28        
         samples = (samples + 1) / 2
         samples = samples.view(-1, 1, 28, 28)
-
-        fig, axs = plt.subplots(10, 10, figsize = (10,10))
-
-        for i, ax in enumerate(axs.flat):
-            if i < len(samples):
-                ax.imshow(samples[i].squeeze(), cmap='gray')
-                ax.axis('off')
+        
+        fig, axs = plt.subplots(10, 10, figsize=(10, 10))
+        for i, ax in enumerate(axs.flat):  # axs.flat is used to iterate over a 2D array as if it's flat
+            if i < len(samples):  # Check to avoid IndexError in case the number of samples is less than 15
+                ax.imshow(samples[i].squeeze(), cmap='gray')  # Display the ith sample
+                ax.axis('off')  # Hide the axis
 
         plt.savefig(args.samples)
+        plt.close()
+    
+    elif args.mode == 'fid':
+        transform = transforms.Compose([
+            transforms.Resize(299),  # Resize to Inception v3's input size
+            transforms.Grayscale(num_output_channels=3),  # Make sure to have 3 channels like Inception expects
+            transforms.ToTensor(),
+            ])
+        
+        real_data = datasets.MNIST('data/', train=True, download=True, transform=transform)
 
+        # Load the model
+        model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
 
+        # Generate samples
+        model.eval()
+        with torch.no_grad():
+            sample_data = (model.sample((10,D))).cpu() 
 
+        # transform the samples back to the original shape 28*28        
+        sample_data = (sample_data + 1) / 2
+        sample_data = sample_data.view(-1, 1, 28, 28)
 
-
-
-
-
-
-
+        # transform the samples to be consistent with the real data
+        sample_data = F.interpolate(sample_data, size=(299, 299), mode='bilinear', align_corners=False)
+        sample_data_rgb = sample_data.repeat(1, 3, 1, 1)
+        
+        fid_value = calculate_fid_given_paths(sample_data_rgb, real_data, 32, args.device, dims=64)
+        print(f"FID: {fid_value}")
+                
+                
+                
+                
+                
